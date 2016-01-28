@@ -1,0 +1,12 @@
+# Site settings
+title: Enterprise Integration with JBoss Fuse
+email: punkhornswl@gmail.com
+description: > # this means to ignore newlines until "baseurl:"
+  Enterprise Integration Topics using the JBoss Fuse Integration Platform. 
+baseurl: "" # the subpath of your site, e.g. /blog/
+url: "http://punkhorn.github.io" # the base hostname & protocol for your site
+twitter_username: punkhornsw
+github_username:  punkhorn
+
+# Build settings
+markdown: kramdown
