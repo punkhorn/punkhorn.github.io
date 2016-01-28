@@ -1,0 +1,61 @@
+---
+layout: post
+title:  "Managing tRFC Communication with SAP in JBoss Fuse"
+date:   2016-01-28 17:00:00
+categories: jboss fuse sap trfc
+---
+**Managing Transactional RFC communication with SAP in JBoss Fuse**
+
+This post discusses how JBoss Fuse implements and manages transactional remote function call (tRFC) communication with SAP.  JBoss Fuse provides several SAP Camel components that support both inbound and outbound transactional RFC communication with SAP and enable Camel routes to send and receive remote function calls reliably to and from SAP. 
+
+**Transactional RFC Communication with SAP**
+
+To begin, lets first discuss what transactional RFC communication with SAP is. SAP systems provide and implement an asynchronous RFC protocol called transactional RFC (tRFC). This protocol enables independent SAP systems and external systems like JBoss Fuse to communicate with each other by reliably sending RFC requests. This protocol provides **AT-MOST-ONCE** delivery and processing guarantees for its requests and ensures that each request sent to a receiving system is processed by that system at most once. This enables remote clients to reliably invoke potentially data modifying remote function modules and BAPI methods in an SAP system and ensure that those operations are performed at most once. It also enables remote clients to reliably handle requests for potentially state modifying operations from an SAP system and also ensure that they only process each request at most once. 
+
+The tRFC protocol accomplishes this AT-MOST-ONCE delivery and processing guarantee by identifying each **transactional request** with a unique **transaction identifier** (TID). A TID accompanies each request sent in the protocol. A sending application using the tRFC protocol must identify each instance of a request with a unique TID when sending the request. An application may send a request with a given TID multiple times but the protocol will ensure that that request will be delivered and process in the receiving system at most once. An application may choose to resend a request with a given TID when encountering a communication or system error when sending the request and is thus in doubt as to whether that request was delivered and processed in the receiving system. By resending a request when encountering an communication error, a client application using the tRFC protocol can thus ensure **EXACTLY-ONCE** delivery and processing guarantees for its request. 
+
+**Note** that tRFC protocol manages **RFC transactions** which are distinct and different from **SAP transactions**. An SAP transaction ensures the atomic and serialized update of data within an SAP database. An RFC transaction ensures the AT-MOST-ONCE delivery and processing of an RFC request across a network. 
+
+**Note** that the transaction RFC protocol is scoped to a particular SAP destination. The RFC transactions of distinct transactional requests to different SAP destinations are managed independently and are not coordinated. 
+
+**Managing Transactional RFC Communication**
+
+The tRFC protocol requires sending and receiving systems to properly manage transactional RFC communication. In particular, these systems are responsible for creating, maintaining and confirming unique TIDs used in the protocol, resending any requests encountering communication or system errors and preventing a request with a given TID from being delivered and processed more than once. 
+
+A **sending system** must ensure that the TID sent with each instance of a request is unique so that the receiving system can identify an instance of a request. A TID is normally only reused when resending an in-doubt request. The protocol however does support reusing a TID for a new instance of a request when the TID is **confirmed**. When a TID is confirmed the protocol informs the receiving system that the TID may be reused in a future instance of a request and that this request should be delivered and processed when first received. 
+
+A **receiving system** must check and remember the TID of every instance of a request it receives. The receiving system must also ensure that each instance of a request is successfully delivered and processed at most once. In the case of a delivery or processing error for a request, the receiving system is responsible for either communicating that error to the sending system so that the sending system can resend the request or be responsible for handling the error itself. A receiving system must also properly respond to TID confirmation notifications so that a TID can be reused. 
+
+In SAP, the **tRFC subsystem** is responsible for managing transactional RFC communication. This subsystem is responsible for creating, maintaining and confirming unique TIDs sent with requests, resending any requests encountering communication or system errors and discarding any requests with a given TID that has already been delivered and processed.  
+
+For external systems like JBoss Fuse, the **SAP RFC libraries** provide mechanisms enabling these external systems to implement their own management of transactional RFC communication. The SAP Camel components In JBoss Fuse that support transactional communication use the **SAP JCo3 libraries** to manage this communication. The JCo3 libraries provide functions to create and confirm TIDs when sending transactional requests to SAP. These libraries also enable a receiving external system to register callbacks to be notified when a  request with a TID is about to be delivered and to decide whether that request should be delivered. The libraries also enable external systems to register callbacks to be notified when a TID has been confirmed by a sending system. 
+
+**Managing Transaction RFC Communication in Camel**
+
+Transactional RFC communication with SAP in Camel is provided by the **SAP Camel components** of JBoss Fuse. The endpoints of SAP destination Camel components that support the tRFC protocol manage transactional RFC communication to SAP. The endpoints of SAP server Camel components that support the tRFC protocol manage transactional RFC communication from SAP. 
+
+These components manage transactional RFC communication in Camel at the **Camel exchange level**. SAP destination endpoints, which use transactional RFC communication, will create a unique TID for each request its sends while processing an exchange and store these TIDs in that exchange. SAP server endpoints, which use transactional RFC communication, will check and store the TID of each request it receives and create an exchange to process that request. They will also ensure that a request for a given TID is successfully processed only once by a Camel exchange. 
+
+At the beginning of an exchange the TID of an inbound transactional request will be checked by an SAP server endpoint and that request will only be processed if a request with that TID has not been previously successfully processed by an exchange. At the conclusion of a successful exchange all TIDS used by that exchange will be confirmed. If an exchange encounters a processing error when processing a transactional request the exchange will either be retried until it is successful or the calling client will be informed of the error. A calling client can resend to an SAP server endpoint a request with the same TID to retry the processing of a failed exchange and that endpoint will attempt to process that request again.
+
+**Outbound TID Management** 
+
+To ensure that a distinct and unique TID is used for each transactional request sent to SAP in an exchange, SAP destination endpoints that support the tRFC protocol use a Camel synchronization adapter called a **Destination RFC Transaction Handler** to manage the TIDs used in a Camel exchange. This handler creates and stores all the TIDs used by an exchange to send transactional requests to a particular SAP destination. An instance of a Destination RFC Transaction Handler is created and stored in the Camel exchange for each SAP destination that the exchange sends a transactional request to.  At the successfully conclusion of an exchange the Destination RFC Transaction Handler will confirm each TID it maintains with the SAP destination. 
+
+**Note** that the Destination RFC Transaction Handler must identify each instance of a transactional request that is sent in an exchange. When a Camel exchange encounters a processing error and attempts to process a Camel route again, it must resend a route’s transactional request using the exact same TID it used in the initial attempt. To correctly perform this action, the handler must identify the processing step (e.g. instance of the SAP Camel endpoint call) in a Camel route used by the exchange that sent the transactional request and what TID was used when sending that request. The Destination RFC Transaction Handler must thus be able to associate a specific TID with a Camel route’s processing step. Unfortunately, out of the box, Camel does not identify to a Camel exchange what processing step of a Camel route is currently being processed. 
+
+**Extending the Camel Runtime to Identify a Processing Step in an Exchange**
+
+To enable a Destination RFC Transaction Handler to identify the processing step in an Exchange that a transactional request is being sent in and to associate that request’s TID with that processing step, a Camel intercept strategy called a **Current Processor Definition Intercept Strategy** must be installed into the Camel runtime. This interceptor stores the Camel processor definition of the current processing step into the Camel exchange and ensures that each processor definition has a unique identifier. The Destination RFC Transaction Handler will retrieve this processor definition from the exchange and use its identifier to track the TID to be used in a transactional request. 
+
+**Note** that the Current Processor Definition Intercept Strategy must be installed into the Camel runtime in order for outbound transactional RFC communication to be properly managed. The Destination RFC Transaction Handlers will issue warnings into the Camel log if the strategy is not found at runtime and in this situation the Camel runtime will need to be re-provisioned and restarted to properly manage outbound transactional RFC communication. 
+
+**Inbound TID Management**
+
+To ensure that the TID of every transactional request received from SAP is checked and remembered and that transactional requests are delivered and processed by a Camel exchange at most once, SAP server endpoints that support the tRFC protocol use a SAP JCo3 Server Transaction ID Handler called a **Server TID Handler** to manage the TIDs of received transactional requests and to enforce the delivery and processing guarantees of the tRFC protocol. This handler will store the TID of every transactional request an endpoint receives and will check the TID of every received transactional request to determine whether that request has already been successfully processed. The handler will also respond to TID confirmation notifications from sending systems by deleting the stored TID so that it may be used to identify another future transactional request. An instance of a Server TID Handler is created by every SAP server endpoint that supports the tRFC protocol.
+
+When a Camel exchange processing a transactional request encounters a processing error, Camel will handle the processing error through its standard error handling mechanisms. If the Camel route processing the exchange is configured to propagate the error back to the caller, the SAP server endpoint that initiated the exchange will note the failure and the sending SAP system will be notified of the error. The sending SAP system can then respond by sending another transaction request with the same TID to process the request again. 
+
+**Conclusion**
+
+So this post has examined the various mechanisms and strategies that JBoss Fuse uses and implements to managed transactional RFC communication. I will examine in future blog posts the various ways that Camel routes can be configured to managed transactional request processing and handle processing errors for those requests. I hope you have found this post enlightening and useful!
